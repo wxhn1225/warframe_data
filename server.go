@@ -166,37 +166,46 @@ func handleFactions(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEnemy(w http.ResponseWriter, r *http.Request) {
-	enableCORS(w)
-	w.Header().Set("Content-Type", "application/json")
-	
-	path := strings.TrimPrefix(r.URL.Path, "/api/enemy/")
-	if path == "" {
-		http.Error(w, "敌人名称不能为空", http.StatusBadRequest)
-		return
-	}
-	
-	filePath := filepath.Join("data", "enemy_data", path+".json")
-	
-	// 检查文件是否存在
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		errorResp := ErrorResponse{Error: "敌人数据文件不存在"}
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(errorResp)
-		return
-	}
-	
-	// 添加缓存控制
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24小时缓存
-	
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		errorResp := ErrorResponse{Error: "读取敌人数据失败"}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(errorResp)
-		return
-	}
-	
-	w.Write(data)
+    enableCORS(w)
+    w.Header().Set("Content-Type", "application/json")
+    
+    path := strings.TrimPrefix(r.URL.Path, "/api/enemy/")
+    if path == "" {
+        http.Error(w, "敌人名称不能为空", http.StatusBadRequest)
+        return
+    }
+    
+    // 获取查询参数中的模式
+    mode := r.URL.Query().Get("mode")
+    dataDir := "enemy_data"
+    
+    // 如果指定为钢铁模式，使用钢铁数据目录
+    if mode == "steel" {
+        dataDir = "enemy_data_steel"
+    }
+    
+    filePath := filepath.Join("data", dataDir, path+".json")
+    
+    // 检查文件是否存在
+    if _, err := os.Stat(filePath); os.IsNotExist(err) {
+        errorResp := ErrorResponse{Error: "敌人数据文件不存在"}
+        w.WriteHeader(http.StatusNotFound)
+        json.NewEncoder(w).Encode(errorResp)
+        return
+    }
+    
+    // 添加缓存控制
+    w.Header().Set("Cache-Control", "public, max-age=86400") // 24小时缓存
+    
+    data, err := ioutil.ReadFile(filePath)
+    if err != nil {
+        errorResp := ErrorResponse{Error: "读取敌人数据失败"}
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(errorResp)
+        return
+    }
+    
+    w.Write(data)
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {

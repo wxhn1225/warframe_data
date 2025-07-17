@@ -5,6 +5,7 @@ let currentEnemyData = null;
 let currentEnemyName = '';
 let enemyDataCache = {}; // 添加缓存对象
 let factionsDataCache = null; // 缓存派系数据
+let currentMode = 'normal'; // 添加游戏模式变量，默认为普通模式
 
 // 添加全局变量存储所有敌人数据
 let allEnemiesData = {};
@@ -48,7 +49,10 @@ async function loadFactionsData() {
         dictZh = await loadLanguageDict('zh');
         dictTarget = (currentLanguage === 'zh') ? dictZh : await loadLanguageDict(currentLanguage);
         
-        // 如果有缓存，使用缓存
+        // 清除敌人数据缓存，确保在切换模式后重新加载
+        enemyDataCache = {};
+        
+        // 如果有缓存且模式没变，使用缓存
         if (factionsDataCache) {
             showFactions(factionsDataCache);
             return;
@@ -157,6 +161,7 @@ function showEnemiesInFaction(faction, enemies) {
 
 async function showEnemyDetail(enemyName) {
     document.getElementById('factionsContainer').style.display = 'none';
+    document.getElementById('searchResults').classList.remove('show');
     document.getElementById('enemyDetail').classList.add('show');
     currentEnemyName = enemyName;
     document.getElementById('enemyTitle').textContent = getTranslatedName(enemyName);
@@ -166,21 +171,25 @@ async function showEnemyDetail(enemyName) {
         document.getElementById('statsContainer').innerHTML = '<div class="loading">加载敌人数据中...</div>';
         
         // 检查缓存
-        if (enemyDataCache[enemyName]) {
-            currentEnemyData = enemyDataCache[enemyName];
+        const cacheKey = `${currentMode}_${enemyName}`;
+        if (enemyDataCache[cacheKey]) {
+            currentEnemyData = enemyDataCache[cacheKey];
             showManualLevelInput(enemyName);
             return;
         }
         
+        // 根据当前模式选择数据文件夹
+        const dataFolder = currentMode === 'normal' ? 'enemy_data' : 'enemy_data_steel';
+        
         // 加载敌人数据
-        const response = await fetch(`data/enemy_data/${encodeURIComponent(enemyName)}.json`);
+        const response = await fetch(`data/${dataFolder}/${encodeURIComponent(enemyName)}.json`);
         if (!response.ok) {
             document.getElementById('statsContainer').innerHTML = `<div class="error">敌人数据文件不存在</div>`;
             return;
         }
         
         currentEnemyData = await response.json();
-        enemyDataCache[enemyName] = currentEnemyData; // 缓存结果
+        enemyDataCache[cacheKey] = currentEnemyData; // 缓存结果
         showManualLevelInput(enemyName);
     } catch (error) {
         document.getElementById('statsContainer').innerHTML = `<div class="error">加载敌人数据失败</div>`;
@@ -348,6 +357,15 @@ document.addEventListener('DOMContentLoaded', function() {
     
     document.getElementById('languageSelect').addEventListener('change', function() {
         currentLanguage = this.value;
+        loadFactionsData();
+    });
+    
+    // 添加模式选择事件监听
+    document.getElementById('modeSelect').addEventListener('change', function() {
+        currentMode = this.value;
+        // 清除缓存，重新加载数据
+        factionsDataCache = null;
+        enemyDataCache = {};
         loadFactionsData();
     });
     
