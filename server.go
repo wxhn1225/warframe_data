@@ -6,8 +6,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 type FactionsData map[string][]string
@@ -28,42 +31,114 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-type TranslationResponse struct {
-	OriginalName   string `json:"originalName"`
-	TranslatedName string `json:"translatedName"`
-	Language       string `json:"language"`
-}
+var (
+	factionsData FactionsData
+	// 添加文件缓存
+	fileCache     = make(map[string][]byte)
+	fileCacheLock sync.RWMutex
+)
 
-var factionsData FactionsData
-var languageDicts map[string]map[string]string
+// 添加一个新的处理函数，返回原始英文派系名称
+func handleOriginalFactions(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
+	w.Header().Set("Content-Type", "application/json")
+	
+	// 添加缓存控制
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	
+	// 读取原始派系数据
+	data, err := ioutil.ReadFile("data/factions_data.json")
+	if err != nil {
+		http.Error(w, "无法读取派系数据", http.StatusInternalServerError)
+		return
+	}
+	
+	// 解析JSON
+	var factionsData map[string][]string
+	err = json.Unmarshal(data, &factionsData)
+	if err != nil {
+		http.Error(w, "解析派系数据失败", http.StatusInternalServerError)
+		return
+	}
+	
+	// 创建新的数据结构，保持派系名称为英文
+	originalFactionsData := make(map[string][]string)
+	for faction, enemies := range factionsData {
+		// 使用原始英文派系名称作为键
+		originalFactionsData[faction] = enemies
+	}
+	
+	// 返回原始派系数据
+	json.NewEncoder(w).Encode(originalFactionsData)
+}
 
 func main() {
 	fmt.Println("🚀 启动 Warframe 敌人数据查看器服务器...")
 	fmt.Println("📁 请确保以下文件存在：")
 	fmt.Println("   - data/factions_data.json")
 	fmt.Println("   - data/enemy_data/ 目录 (包含所有敌人JSON文件)")
-	fmt.Println("   - languages/ 目录 (包含语言字典文件)")
 	fmt.Println("   - index.html (前端页面)")
 	fmt.Println("\n🌐 服务器将在 http://localhost:5000 启动")
 
-	// 初始化语言字典
-	languageDicts = make(map[string]map[string]string)
 	// 加载派系数据
 	loadFactionsData()
-	// 预加载常用语言字典
-	loadLanguageDict("zh")
-	loadLanguageDict("en")
+
+	// 预加载常用静态文件到缓存
+	preloadStaticFiles()
 
 	// 设置路由
-	http.HandleFunc("/api/factions", handleFactions)
-	http.HandleFunc("/api/enemy/", handleEnemy)
-	http.HandleFunc("/api/status", handleStatus)
-	http.HandleFunc("/api/translate/", handleTranslate)
-	http.HandleFunc("/api/enemy_data", handleEnemyData)
-	http.HandleFunc("/", handleStatic)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/factions", handleOriginalFactions) // 使用新的处理函数
+	mux.HandleFunc("/api/enemy/", handleEnemy)
+	mux.HandleFunc("/api/status", handleStatus)
+	mux.HandleFunc("/", handleStatic)
+
+	// 创建带超时的服务器
+	server := &http.Server{
+		Addr:         ":5000",
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 
 	// 启动服务器
-	log.Fatal(http.ListenAndServe(":5000", nil))
+	log.Fatal(server.ListenAndServe())
+}
+
+func preloadStaticFiles() {
+	// 预加载关键静态文件
+	filesToPreload := []string{
+		"index.html",
+		"assets/app.js",
+		"assets/styles.css",
+	}
+
+	for _, file := range filesToPreload {
+		data, err := ioutil.ReadFile(file)
+		if err == nil {
+			fileCacheLock.Lock()
+			fileCache[file] = data
+			fileCacheLock.Unlock()
+			fmt.Printf("✅ 预加载文件: %s\n", file)
+		} else {
+			fmt.Printf("❌ 无法预加载文件: %s\n", file)
+		}
+	}
+
+	// 预加载语言文件
+	languageFiles, err := filepath.Glob("languages/dict.*.json")
+	if err == nil {
+		for _, file := range languageFiles {
+			data, err := ioutil.ReadFile(file)
+			if err == nil {
+				fileCacheLock.Lock()
+				fileCache[file] = data
+				fileCacheLock.Unlock()
+				fmt.Printf("✅ 预加载语言文件: %s\n", file)
+			}
+		}
+	}
 }
 
 func loadFactionsData() {
@@ -80,223 +155,66 @@ func loadFactionsData() {
 	fmt.Println("✅ 派系数据加载成功")
 }
 
-func loadLanguageDict(lang string) {
-	if languageDicts[lang] != nil {
-		return // 已经加载过了
-	}
-	filePath := filepath.Join("languages", fmt.Sprintf("dict.%s.json", lang))
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		fmt.Printf("⚠️  未找到语言文件: %s\n", filePath)
-		return
-	}
-	var langDict map[string]string
-	err = json.Unmarshal(data, &langDict)
-	if err != nil {
-		fmt.Printf("❌ 解析语言文件失败 %s: %v\n", lang, err)
-		return
-	}
-	languageDicts[lang] = langDict
-	fmt.Printf("✅ 语言字典加载成功: %s\n", lang)
-}
-
 func handleFactions(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	lang := r.URL.Query().Get("lang")
-	if lang == "" || lang == "zh" {
-		json.NewEncoder(w).Encode(factionsData)
-		return
-	}
-	// 翻译派系和敌人名
-	if languageDicts[lang] == nil {
-		loadLanguageDict(lang)
-	}
-	if languageDicts[lang] == nil || languageDicts["zh"] == nil {
-		json.NewEncoder(w).Encode(factionsData)
-		return
-	}
-	zhDict := languageDicts["zh"]
-	targetDict := languageDicts[lang]
-	result := make(map[string][]string)
-	for faction, enemies := range factionsData {
-		factionKey := ""
-		for k, v := range zhDict {
-			if v == faction {
-				factionKey = k
-				break
-			}
-		}
-		translatedFaction := faction
-		if factionKey != "" {
-			if val, ok := targetDict[factionKey]; ok {
-				translatedFaction = val
-			}
-		}
-		var translatedEnemies []string
-		for _, enemy := range enemies {
-			enemyKey := ""
-			for k, v := range zhDict {
-				if v == enemy {
-					enemyKey = k
-					break
-				}
-			}
-			translatedEnemy := enemy
-			if enemyKey != "" {
-				if val, ok := targetDict[enemyKey]; ok {
-					translatedEnemy = val
-				}
-			}
-			translatedEnemies = append(translatedEnemies, translatedEnemy)
-		}
-		result[translatedFaction] = translatedEnemies
-	}
-	json.NewEncoder(w).Encode(result)
+	
+	// 添加缓存控制
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	
+	json.NewEncoder(w).Encode(factionsData)
 }
 
 func handleEnemy(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	
 	path := strings.TrimPrefix(r.URL.Path, "/api/enemy/")
 	if path == "" {
 		http.Error(w, "敌人名称不能为空", http.StatusBadRequest)
 		return
 	}
+	
 	filePath := filepath.Join("data", "enemy_data", path+".json")
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
+	
+	// 检查文件是否存在
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		errorResp := ErrorResponse{Error: "敌人数据文件不存在"}
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(errorResp)
 		return
 	}
+	
+	// 添加缓存控制
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 24小时缓存
+	
+	data, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		errorResp := ErrorResponse{Error: "读取敌人数据失败"}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(errorResp)
+		return
+	}
+	
 	w.Write(data)
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
+	enableCORS(w)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	
 	totalEnemies := 0
 	for _, enemies := range factionsData {
 		totalEnemies += len(enemies)
 	}
+	
 	status := StatusResponse{
 		Status:        "running",
 		FactionsCount: len(factionsData),
 		TotalEnemies:  totalEnemies,
 	}
+	
 	json.NewEncoder(w).Encode(status)
-}
-
-func handleTranslate(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	path := strings.TrimPrefix(r.URL.Path, "/api/translate/")
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
-		http.Error(w, "参数不足", http.StatusBadRequest)
-		return
-	}
-	lang := parts[0]
-	enemyName := strings.Join(parts[1:], "/")
-	if languageDicts[lang] == nil {
-		loadLanguageDict(lang)
-		if languageDicts[lang] == nil {
-			errorResp := ErrorResponse{Error: "语言不支持"}
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(errorResp)
-			return
-		}
-	}
-	translatedName := translateEnemyName(enemyName, lang)
-	response := TranslationResponse{
-		OriginalName:   enemyName,
-		TranslatedName: translatedName,
-		Language:       lang,
-	}
-	json.NewEncoder(w).Encode(response)
-}
-
-func translateEnemyName(enemyName, lang string) string {
-	langDict := languageDicts[lang]
-	if langDict == nil {
-		return enemyName
-	}
-	// 尝试直接匹配
-	if translated, exists := langDict[enemyName]; exists {
-		return translated
-	}
-	// 尝试通过路径查找
-	for path, translation := range langDict {
-		if translation == enemyName {
-			if targetDict := languageDicts[lang]; targetDict != nil {
-				if targetTranslation, exists := targetDict[path]; exists {
-					return targetTranslation
-				}
-			}
-		}
-	}
-	return enemyName
-}
-
-// 新增：获取指定敌人指定等级数据（已翻译）
-func handleEnemyData(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	name := r.URL.Query().Get("name")
-	level := r.URL.Query().Get("level")
-	lang := r.URL.Query().Get("lang")
-	if name == "" || level == "" || lang == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "参数不完整"})
-		return
-	}
-	filePath := filepath.Join("data", "enemy_data", name+".json")
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "敌人数据文件不存在"})
-		return
-	}
-	var enemy EnemyData
-	err = json.Unmarshal(data, &enemy)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "敌人数据解析失败"})
-		return
-	}
-	if languageDicts[lang] == nil {
-		loadLanguageDict(lang)
-	}
-	if languageDicts[lang] == nil || languageDicts["zh"] == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "语言包加载失败"})
-		return
-	}
-	zhDict := languageDicts["zh"]
-	targetDict := languageDicts[lang]
-	translatedName := enemy.EnemyName
-	for k, v := range zhDict {
-		if v == enemy.EnemyName {
-			if val, ok := targetDict[k]; ok {
-				translatedName = val
-			}
-			break
-		}
-	}
-	levelData, ok := enemy.LevelData[level]
-	if !ok {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "该等级数据不存在"})
-		return
-	}
-	resp := map[string]interface{}{
-		"enemyName": translatedName,
-		"level": level,
-		"data": levelData,
-	}
-	json.NewEncoder(w).Encode(resp)
 }
 
 func handleStatic(w http.ResponseWriter, r *http.Request) {
@@ -304,19 +222,68 @@ func handleStatic(w http.ResponseWriter, r *http.Request) {
 	if path == "/" {
 		path = "/index.html"
 	}
+	
 	filePath := strings.TrimPrefix(path, "/")
+	
+	// 设置适当的内容类型
+	setContentType(w, filePath)
+	
+	// 添加缓存控制
+	if !strings.Contains(filePath, "data/") {
+		w.Header().Set("Cache-Control", "public, max-age=3600") // 静态资源缓存1小时
+	}
+	
+	// 检查缓存中是否有文件
+	fileCacheLock.RLock()
+	cachedData, found := fileCache[filePath]
+	fileCacheLock.RUnlock()
+	
+	if found {
+		w.Write(cachedData)
+		return
+	}
+	
+	// 如果缓存中没有，则从磁盘读取
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
 		http.Error(w, "文件不存在", http.StatusNotFound)
 		return
 	}
+	
+	// 缓存较小的文件（小于1MB）
+	if len(data) < 1024*1024 && !strings.Contains(filePath, "data/enemy_data/") {
+		fileCacheLock.Lock()
+		fileCache[filePath] = data
+		fileCacheLock.Unlock()
+	}
+	
+	w.Write(data)
+}
+
+func setContentType(w http.ResponseWriter, filePath string) {
 	switch {
 	case strings.HasSuffix(filePath, ".html"):
-		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case strings.HasSuffix(filePath, ".css"):
 		w.Header().Set("Content-Type", "text/css")
 	case strings.HasSuffix(filePath, ".js"):
 		w.Header().Set("Content-Type", "application/javascript")
+	case strings.HasSuffix(filePath, ".json"):
+		w.Header().Set("Content-Type", "application/json")
+	case strings.HasSuffix(filePath, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	case strings.HasSuffix(filePath, ".jpg"), strings.HasSuffix(filePath, ".jpeg"):
+		w.Header().Set("Content-Type", "image/jpeg")
+	case strings.HasSuffix(filePath, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
 	}
-	w.Write(data)
 }
+
+func enableCORS(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
