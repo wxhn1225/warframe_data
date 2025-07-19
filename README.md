@@ -16,22 +16,21 @@
 
 ```
 warframe_data/
-├── See.exe          # 可执行文件
-├── index.html          # 主页面
-├── server.go           # 服务器源码
-├── README.md           # 说明文档
-├── src/                # 源代码
-│   ├── analyze_factions.py
-│   └── go.mod
-├── data/               # 数据文件
-│   ├── enemy_data/     # 普通模式敌人数据
+├── See.exe            # 可执行文件
+├── index.html         # 主页面
+├── server.go          # 服务器源码
+├── README.md          # 说明文档
+├── src/               # 源代码
+│   └── analyze_factions.py
+├── data/              # 数据文件
+│   ├── enemy_data/    # 普通模式敌人数据
 │   ├── enemy_data_steel/ # 钢铁模式敌人数据
 │   └── factions_data.json
-├── languages/          # 多语言文件
+├── languages/         # 多语言文件
 │   ├── dict.zh.json
 │   ├── dict.en.json
 │   └── ...
-└── assets/             # 资源文件
+└── assets/            # 资源文件
     ├── styles.css
     └── app.js
 ```
@@ -40,7 +39,6 @@ warframe_data/
 
 1. 双击运行 `See.exe`
 2. 在浏览器中访问 `http://localhost:5000`
-
 
 ## 使用方法
 
